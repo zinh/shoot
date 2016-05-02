@@ -31,8 +31,8 @@ start_child(Pid) ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([Callback, IP, Port, UserArgs]) ->
-  DefaultOps = [binary, 
-                {ip, IP}, 
+  DefaultOps = [binary,
+                {ip, IP},
                 {active, false}],
   SockOps = case IP of
               undefined -> DefaultOps;

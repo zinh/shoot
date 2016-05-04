@@ -1,8 +1,7 @@
 {application, gen_websocket,
- [{description, "An OTP application"},
+ [{description, "gen_websocket behaviour"},
   {vsn, "0.1.0"},
   {registered, []},
-  {mod, { gen_websocket_app, []}},
   {applications,
    [kernel,
     stdlib

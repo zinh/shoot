@@ -20,10 +20,12 @@
 %%====================================================================
 
 start_link(Callback, IP, Port, UserArgs) ->
-  supervisor:start_link({local, ?SERVER}, ?MODULE, [Callback, IP, Port, UserArgs]).
+  {ok, Pid} = supervisor:start_link(?MODULE, [Callback, IP, Port, UserArgs]),
+  start_child(Pid),
+  {ok, Pid}.
 
-start_child(Pid) ->
-  supervisor:start_child(Pid, []).
+start_child(Parent) ->
+  supervisor:start_child(Parent, []).
 
 %%====================================================================
 %% Supervisor callbacks
@@ -32,16 +34,17 @@ start_child(Pid) ->
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([Callback, IP, Port, UserArgs]) ->
   DefaultOps = [binary,
-                {ip, IP},
-                {active, false}],
+    {packet, http_bin},
+    {reuseaddr, true},
+    {active, false}],
   SockOps = case IP of
-              undefined -> DefaultOps;
-              _ -> [{ip, IP} | DefaultOps]
-            end,
-  Socket = gen_tcp:listen(Port, SockOps),
+    undefined -> DefaultOps;
+    _ -> [{ip, IP} | DefaultOps]
+  end,
+  {ok, Socket} = gen_tcp:listen(Port, SockOps),
   RestartStrategy = {simple_one_for_one, 0, 1},
   Server = {gw_server, {gw_server, start_link, [self(), Socket, Callback, UserArgs]}, temporary, brutal_kill, worker, [gw_server]},
-  {ok, { {one_for_all, 0, 1}, [Server]} }.
+  {ok, { RestartStrategy, [Server]} }.
 
 %%====================================================================
 %% Internal functions

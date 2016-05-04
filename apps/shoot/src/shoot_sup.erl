@@ -8,7 +8,7 @@
 -behaviour(supervisor).
 
 %% API
--export([start_link/0]).
+-export([start_link/1]).
 
 %% Supervisor callbacks
 -export([init/1]).
@@ -19,16 +19,18 @@
 %% API functions
 %%====================================================================
 
-start_link() ->
-  supervisor:start_link({local, ?SERVER}, ?MODULE, []).
+start_link(Port) ->
+  supervisor:start_link({local, ?SERVER}, ?MODULE, [Port]).
 
 %%====================================================================
 %% Supervisor callbacks
 %%====================================================================
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
-init([]) ->
-  {ok, { {one_for_all, 0, 1}, []} }.
+init([Port]) ->
+  Child = {shoot_server, {shoot_server, start_link, [Port]}, temporary, brutal_kill, worker, [shoot_server]},
+  Strategy = {one_for_one, 0, 1},
+  {ok, { Strategy, [Child]} }.
 
 %%====================================================================
 %% Internal functions

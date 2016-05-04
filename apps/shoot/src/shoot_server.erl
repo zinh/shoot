@@ -6,13 +6,11 @@
 %% Callback
 -export([init/1, request/2]).
 
--record(state, {message}).
-
 start_link(Port) ->
   gen_websocket:start_link(shoot_server, Port, []).
 
 init([]) ->
-  {ok, #state{message="Hello world"}}.
+  ok.
 
-request(_Message, State) ->
-  {noreply, State}.
+request(_Message, _State) ->
+  ok.

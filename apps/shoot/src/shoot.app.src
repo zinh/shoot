@@ -5,7 +5,8 @@
   {mod, { shoot_app, []}},
   {applications,
    [kernel,
-    stdlib
+    stdlib,
+    gen_websocket
    ]},
   {env,[]},
   {modules, []},

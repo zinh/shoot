@@ -10,7 +10,10 @@
 %% Define data
 %% type: connection type websocket | _other
 %% sec_key: Sec-WebSocket-Key
--record(state, {parent, socket, callback, user_args, phase=handshake, type, sec_key}).
+%% phase: handshake: handshaking
+%% phase: waiting: handshaked, waiting for message
+%% phase: receiving: receiving messsage
+-record(state, {parent, socket, callback, user_args, phase=handshake, type, sec_key, len, message}).
 -define(MAGIC_STRING, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").
 
 %% API
@@ -47,6 +50,11 @@ handle_info({http, _Socket, http_eoh}, #state{phase=handshake, type=Type, socket
     _Other ->
       {stop, malformed, State}
   end;
+
+handle_info({tcp, _Socket, RawData}, #state{phase=waiting} = State) ->
+  NewState = parse_frame(RawData, State),
+  io:format("Received raw: ~p~n", [RawData]),
+  {noreply, NewState};
 
 handle_info({tcp_closed, _Socket}, State) ->
   {stop, closed, State}.
@@ -85,8 +93,27 @@ handshake_reply(#state{socket = Socket, sec_key = SecKey} = State) ->
     AcceptKey,
     <<"\r\n\r\n">>],
   gen_tcp:send(Socket, Reply),
-  State#state{phase = handshaked}.
+  State#state{phase = waiting}.
 
 websocket_key(Key) ->
   HashKey = crypto:hash(sha, Key ++ ?MAGIC_STRING),
   base64:encode(HashKey).
+
+parse_frame(Frame, State) ->
+  case Frame of
+    <<Fin:1, _Reserved:3, Opcode:4, Mask:1, PayloadLen:7, MaskKey:4/binary, Payload/binary>> when PayloadLen < 126 ->
+      ReceivedSize = byte_size(Payload),
+      io:format("Len: ~p, Received: ~p~n", [PayloadLen, ReceivedSize]),
+      if PayloadLen =:= ReceivedSize ->
+          State#state{phase=waiting, message=Payload}
+        true ->
+          State#state{phase=receiving, message=Payload}
+      end;
+    <<Fin:1, _Reserved:3, Opcode:4, Mask:1, PayloadLen:7, Len:32/integer, Mask:4/binary, Payload/binary>> when PayloadLen =:= 126 ->
+      ReceivedSize = byte_size(Payload);
+    <<Fin:1, _Reserved:3, Opcode:4, Mask:1, PayloadLen:7, Len:64/integer, Mask:4/binary, Payload/binary>> when PayloadLen =:= 127 ->
+      ReceivedSize = byte_size(Payload);
+    _ ->
+      io:format("Error case~n")
+  end,
+  State.

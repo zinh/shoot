@@ -12,8 +12,8 @@
 %% sec_key: Sec-WebSocket-Key
 %% phase: handshake: handshaking
 %% phase: waiting: handshaked, waiting for message
-%% phase: receiving: receiving messsage
--record(state, {parent, socket, callback, user_args, phase=handshake, type, sec_key, len, message}).
+%% phase: receiving: receiving message
+-record(state, {parent, socket, callback, user_args, phase=handshake, type, sec_key, len, message = <<>>}).
 -define(MAGIC_STRING, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").
 
 %% API
@@ -100,20 +100,42 @@ websocket_key(Key) ->
   base64:encode(HashKey).
 
 parse_frame(Frame, State) ->
-  case Frame of
-    <<Fin:1, _Reserved:3, Opcode:4, Mask:1, PayloadLen:7, MaskKey:4/binary, Payload/binary>> when PayloadLen < 126 ->
-      ReceivedSize = byte_size(Payload),
-      io:format("Len: ~p, Received: ~p~n", [PayloadLen, ReceivedSize]),
-      if PayloadLen =:= ReceivedSize ->
-          State#state{phase=waiting, message=Payload}
-        true ->
-          State#state{phase=receiving, message=Payload}
-      end;
-    <<Fin:1, _Reserved:3, Opcode:4, Mask:1, PayloadLen:7, Len:32/integer, Mask:4/binary, Payload/binary>> when PayloadLen =:= 126 ->
-      ReceivedSize = byte_size(Payload);
-    <<Fin:1, _Reserved:3, Opcode:4, Mask:1, PayloadLen:7, Len:64/integer, Mask:4/binary, Payload/binary>> when PayloadLen =:= 127 ->
-      ReceivedSize = byte_size(Payload);
+  {FFin, LLength, MMaskKey, PPayload} = case Frame of
+    <<Fin:1, _Reserved:3, _Opcode:4, _Mask:1, PayloadLen:7, MaskKey:4/binary, Payload/binary>> when PayloadLen < 126 ->
+      {Fin, PayloadLen, MaskKey, Payload};
+    <<Fin:1, _Reserved:3, _Opcode:4, _Mask:1, PayloadLen:7, _Len:32/integer, MaskKey:4/binary, Payload/binary>> when PayloadLen =:= 126 ->
+      {Fin, PayloadLen, MaskKey, Payload};
+    <<Fin:1, _Reserved:3, _Opcode:4, _Mask:1, PayloadLen:7, _Len:64/integer, MaskKey:4/binary, Payload/binary>> when PayloadLen =:= 127 ->
+      {Fin, PayloadLen, MaskKey, Payload};
     _ ->
       io:format("Error case~n")
   end,
-  State.
+  ReceivedSize = byte_size(PPayload),
+  io:format("Len: ~p, Received: ~p~n", [LLength,  ReceivedSize]),
+  CurrentMessage = State#state.message,
+  if FFin =:= 1 ->
+      NewState = State#state{phase=waiting, message=unmask(MMaskKey, erlang:iolist_to_binary([CurrentMessage, PPayload]))},
+      handle(NewState);
+    true ->
+      NewState = State#state{phase=receiving, message=[CurrentMessage, unmask(MMaskKey, PPayload)]}
+  end,
+  NewState.
+
+unmask(MaskKey, Message) ->
+  unmask_tail(MaskKey, [], Message).
+
+unmask_tail(MaskKey, UnmaskMessage, <<H:4/binary,T/binary>>) ->
+  unmask_tail(MaskKey, [UnmaskMessage, crypto:exor(MaskKey, H)], T);
+
+unmask_tail(MaskKey, UnmaskMessage, <<T/binary>>) ->
+  <<Key:byte_size(T)/binary, T/binary>> = MaskKey,
+  unmask_tail(MaskKey, [UnmaskMessage, crypto:exor(Key, T)], <<>>);
+
+unmask_tail(MaskKey, UnmaskMessage, <<>>) ->
+  erlang:iolist_to_binary(UnmaskMessage);
+
+unmask_tail(A, B, C) ->
+  io:format("Unmask: ~p / ~p / ~p~n", [A, B, C]).
+
+handle(#state{message = Message}) ->
+  io:format("Received: ~p~n", [Message]).

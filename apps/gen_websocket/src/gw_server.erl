@@ -25,9 +25,7 @@ init([Parent, Socket, Callback, UserArgs]) ->
   {ok, #state{parent=Parent, socket=Socket, callback=Callback, user_args=UserArgs}, 0}.
 
 handle_info(timeout, #state{parent=Parent, socket=Socket}=State) ->
-  io:format("Waiting for new connection~p~n", [Socket]),
   {ok, LSock} = gen_tcp:accept(Socket),
-  io:format("Incoming connection~n"),
   supervisor:start_child(Parent, []),
   inet:setopts(LSock, [{active, once}]),
   {noreply, State#state{socket=LSock}};
@@ -51,9 +49,8 @@ handle_info({http, _Socket, http_eoh}, #state{phase=handshake, type=Type, socket
       {stop, malformed, State}
   end;
 
-handle_info({tcp, _Socket, RawData}, #state{phase=waiting} = State) ->
+handle_info({tcp, _Socket, RawData}, State) ->
   NewState = parse_frame(RawData, State),
-  io:format("Received raw: ~p~n", [RawData]),
   {noreply, NewState};
 
 handle_info({tcp_closed, _Socket}, State) ->
@@ -65,6 +62,10 @@ terminate(_Reason, _State) ->
 handle_call(_Request, _From, State) ->
   {noreply, State}.
 
+handle_cast({reply, Message}, #state{socket = Socket} = State) ->
+  reply(Socket, Message),
+  {noreply, State};
+
 handle_cast(_Request, State) ->
   {noreply, State}.
 
@@ -73,15 +74,12 @@ code_change(_OldVsn, State, _Extra) ->
 
 %% Private
 headers('Upgrade', <<"websocket">>, State) ->
-  io:format("'Upgrade': websocket~n"),
   State#state{type = websocket};
 
 headers(<<"Sec-Websocket-Key">>, Key, State) ->
-  io:format("'Sec-Websocket-Key': ~p~n", [Key]),
   State#state{sec_key = binary_to_list(Key)};
 
-headers(Key, Value, State) ->
-  io:format("~p: ~p~n", [Key, Value]),
+headers(_Key, _Value, State) ->
   State.
 
 handshake_reply(#state{socket = Socket, sec_key = SecKey} = State) ->
@@ -93,14 +91,14 @@ handshake_reply(#state{socket = Socket, sec_key = SecKey} = State) ->
     AcceptKey,
     <<"\r\n\r\n">>],
   gen_tcp:send(Socket, Reply),
-  State#state{phase = waiting}.
+  State.
 
 websocket_key(Key) ->
   HashKey = crypto:hash(sha, Key ++ ?MAGIC_STRING),
   base64:encode(HashKey).
 
 parse_frame(Frame, State) ->
-  {FFin, LLength, MMaskKey, PPayload} = case Frame of
+  {FFin, _LLength, MMaskKey, PPayload} = case Frame of
     <<Fin:1, _Reserved:3, _Opcode:4, _Mask:1, PayloadLen:7, MaskKey:4/binary, Payload/binary>> when PayloadLen < 126 ->
       {Fin, PayloadLen, MaskKey, Payload};
     <<Fin:1, _Reserved:3, _Opcode:4, _Mask:1, PayloadLen:7, _Len:32/integer, MaskKey:4/binary, Payload/binary>> when PayloadLen =:= 126 ->
@@ -110,32 +108,44 @@ parse_frame(Frame, State) ->
     _ ->
       io:format("Error case~n")
   end,
-  ReceivedSize = byte_size(PPayload),
-  io:format("Len: ~p, Received: ~p~n", [LLength,  ReceivedSize]),
   CurrentMessage = State#state.message,
-  if FFin =:= 1 ->
-      NewState = State#state{phase=waiting, message=unmask(MMaskKey, erlang:iolist_to_binary([CurrentMessage, PPayload]))},
-      handle(NewState);
+  NewState = if FFin =:= 1 ->
+      handle(State#state{
+          message = unmask(MMaskKey, erlang:iolist_to_binary([CurrentMessage, PPayload]))
+        });
     true ->
-      NewState = State#state{phase=receiving, message=[CurrentMessage, unmask(MMaskKey, PPayload)]}
+      State#state{
+        message = [CurrentMessage, unmask(MMaskKey, PPayload)]
+      }
   end,
   NewState.
 
 unmask(MaskKey, Message) ->
   unmask_tail(MaskKey, [], Message).
 
+unmask_tail(_MaskKey, UnmaskMessage, <<>>) ->
+  erlang:iolist_to_binary(UnmaskMessage);
+
 unmask_tail(MaskKey, UnmaskMessage, <<H:4/binary,T/binary>>) ->
   unmask_tail(MaskKey, [UnmaskMessage, crypto:exor(MaskKey, H)], T);
 
 unmask_tail(MaskKey, UnmaskMessage, <<T/binary>>) ->
-  <<Key:byte_size(T)/binary, T/binary>> = MaskKey,
-  unmask_tail(MaskKey, [UnmaskMessage, crypto:exor(Key, T)], <<>>);
+  Key = binary:part(MaskKey, 0, byte_size(T)),
+  unmask_tail(MaskKey, [UnmaskMessage, crypto:exor(Key, T)], <<>>).
 
-unmask_tail(MaskKey, UnmaskMessage, <<>>) ->
-  erlang:iolist_to_binary(UnmaskMessage);
+handle(#state{message = Message, callback = Callback, user_args = UserArgs, socket = Socket} = State) ->
+  Args = case Callback:handle_message(Message, UserArgs) of
+    {reply, Reply, NewUserArgs} ->
+      reply(Socket, Reply),
+      NewUserArgs;
+    {noreply, NewUserArgs} ->
+      NewUserArgs
+  end,
+  State#state{user_args = Args, message = <<>>}.
 
-unmask_tail(A, B, C) ->
-  io:format("Unmask: ~p / ~p / ~p~n", [A, B, C]).
+reply_packet_gen(Message) ->
+  Size = byte_size(Message),
+  [<<2#100000010, Size:7/integer>>, Message].
 
-handle(#state{message = Message}) ->
-  io:format("Received: ~p~n", [Message]).
+reply(Socket, Message) ->
+  gen_tcp:send(Socket, reply_packet_gen(Message)).

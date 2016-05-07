@@ -4,7 +4,7 @@
 
 -export([start_link/1]).
 %% Callback
--export([init/1, request/2]).
+-export([init/1, handle_message/2]).
 
 start_link(Port) ->
   gen_websocket:start_link(shoot_server, Port, []).
@@ -12,5 +12,5 @@ start_link(Port) ->
 init([]) ->
   ok.
 
-request(_Message, _State) ->
-  ok.
+handle_message(Message, State) ->
+  {reply, Message, State}.

@@ -10,10 +10,7 @@
 %% Define data
 %% type: connection type websocket | _other
 %% sec_key: Sec-WebSocket-Key
-%% phase: handshake: handshaking
-%% phase: waiting: handshaked, waiting for message
-%% phase: receiving: receiving message
--record(state, {parent, socket, callback, user_args, phase=handshake, type, sec_key, len, message = <<>>}).
+-record(state, {parent, socket, callback, user_args, type, sec_key, len, message = <<>>}).
 -define(MAGIC_STRING, "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").
 
 %% API
@@ -39,7 +36,7 @@ handle_info({http, _Socket, {http_request, _Action, _Path, _Version}}, #state{so
   inet:setopts(Socket, [{active, once}]),
   {noreply, State};
 
-handle_info({http, _Socket, http_eoh}, #state{phase=handshake, type=Type, socket=Socket} = State) ->
+handle_info({http, _Socket, http_eoh}, #state{type=Type, socket=Socket} = State) ->
   case Type of
     websocket -> 
       NewState = handshake_reply(State),
@@ -49,8 +46,9 @@ handle_info({http, _Socket, http_eoh}, #state{phase=handshake, type=Type, socket
       {stop, malformed, State}
   end;
 
-handle_info({tcp, _Socket, RawData}, State) ->
+handle_info({tcp, _Socket, RawData}, #state{socket = Socket}=State) ->
   NewState = parse_frame(RawData, State),
+  inet:setopts(Socket, [{packet, raw}, {active, once}]),
   {noreply, NewState};
 
 handle_info({tcp_closed, _Socket}, State) ->
@@ -145,7 +143,8 @@ handle(#state{message = Message, callback = Callback, user_args = UserArgs, sock
 
 reply_packet_gen(Message) ->
   Size = byte_size(Message),
-  [<<2#100000010, Size:7/integer>>, Message].
+  [<<129, Size>>, Message].
+  %% [<<2#100000010, Size:7/integer>>, Message].
 
 reply(Socket, Message) ->
   gen_tcp:send(Socket, reply_packet_gen(Message)).
